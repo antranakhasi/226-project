@@ -5,3 +5,11 @@
 3. `git commit -m "some comment"` add comments to your changes
 4. `git push' or 'git push origin` push yout changes to the repository
 5. Additonally, `git status` to check which files are added or not. green menas they are part of your local branch, red means not added.
+
+## Project Handouts
+[Part 1](https://canvas.stanford.edu/courses/196758/files/folder/Project?preview=14010751)
+[Part 2](https://canvas.stanford.edu/courses/196758/files/folder/Project?preview=14010754)
+
+## Write up
+[Part 1](https://docs.google.com/document/d/1SeUzsrH1HSbG22OYjkzIj-EYvIGSxJYkXD2DDPh5IMk/edit?tab=t.0)
+[Part 2](https://docs.google.com/document/d/18JeTHdAWoqv3bGOg0yGatRhkbG9J3VJ4hwqW7M3sEsc/edit?usp=sharing)
