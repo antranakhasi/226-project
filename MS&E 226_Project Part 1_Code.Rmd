@@ -32,11 +32,12 @@ library(kernlab)
 set.seed(123) # Setting seed for reproducibility
 ```
 
+# 2: Data Pre-processing
 
 ```{r Pre Process, results='hide'}
 
 # load data
-df <- read.csv("/Users/sydneyloh/OneDrive/Documents/Stanford/MS&E 226/Term Project/electricity.csv")
+df <- read.csv("electricity.csv")
 
 
 ## pre process data
@@ -86,8 +87,7 @@ df <- df[-which(is.na(df$Utility.Region)), ]
 
 ```
 
-
-
+# 3: Hold Out Set
 
 ```{r Create Holdout Set, results='hide'}
 # Total number of rows in the dataset
@@ -105,7 +105,11 @@ cat("Holdout Set Size:", nrow(holdout), "\n")
 cat("Training Set Size:", nrow(df), "\n")
 ```
 
-```{r Correlations, fig.show='hide', results='hide'}
+# 5: Data Exploration
+
+## Correlations
+
+```{r Correlations with Revenue.Total, fig.show='hide', results='hide'}
 
 # Correlation the continuous outcome: Hours Worked Per Week 
 
@@ -164,8 +168,9 @@ ggplot(sorted_correlations_revenue, aes(x = reorder(Variable, Correlation_with_r
        x = "Variables", 
        y = "Correlation Coefficient") +
   theme_minimal()
+```
 
-
+```{r Correlations with Uses.Consumed.Binary, fig.show='hide', results='hide'}
 # Calculate correlations with binary outcome variable
 correlations_with_uses_consumed <- correlations["Uses.Consumed.Binary",]
 
@@ -189,7 +194,6 @@ ggplot(sorted_correlations_uses_consumed, aes(x = reorder(Variable, Correlation_
        x = "Variables", 
        y = "Correlation Coefficient") +
   theme_minimal()
-
 
 ```
 
@@ -218,8 +222,9 @@ ggplot(data = cor, aes(x = Var1, y = Var2, fill = value)) +
 
 ```
 
+## Subgroups in data
 
-```{r 5f subgroups in data, fig.show='hide', results='hide'}
+```{r means across categories, fig.show='hide', results='hide'}
 
 # Calculate means for utility.state
 state_means <- df %>%
@@ -243,7 +248,9 @@ View(type_means)
 View(region_means)
 variables_to_plot <- names(state_means)[-1]  # Exclude Utility.State
 plot_list <- list()
+```
 
+```{r Utility.State plots, fig.show='hide', results='hide'}
 # Loop through each variable and create a plot
 for (var in variables_to_plot) {
   p <- ggplot(state_means, aes_string(x = "Utility.State", y = var)) +
@@ -264,6 +271,11 @@ for (var in variables_to_plot) {
 for (plot in plot_list) {
   print(plot)
 }
+
+
+```
+
+```{r Utility.Type plots, fig.show='hide', results='hide'}
 # Create plots for utility type means
 variables_to_plot_type <- names(type_means)[-1]  # Exclude Utility.Type
 plot_list_type <- list()
@@ -288,6 +300,10 @@ for (var in variables_to_plot_type) {
 for (plot in plot_list_type) {
   print(plot)
 }
+
+```
+
+```{r Utility.Region Plots, fig.show='hide', results='hide'}
 # Define the list of variables to plot, excluding the grouping column (Utility.Region)
 variables_to_plot <- names(region_means)[-1]
 
@@ -316,13 +332,13 @@ for (var in variables_to_plot) {
 for (plot in plot_list) {
   print(plot)
 }
-
-
 ```
 
 # 6: Regression
 
-```{r regression}
+## Data Transformations
+
+```{r data transformations}
 # set seed
 set.seed(123)
 
@@ -338,14 +354,6 @@ print(paste("Mean Revenue:", mean_revenue))
 print(paste("Median Revenue:", median_revenue))
 print(paste("Standard Deviation:", std_dev_revenue))
 print(paste("IQR:", iqr_revenue))
-
-columns_to_exclude <- c("Utility.Name", "Utility.Number", "Utility.State", 
-                         "Revenue.Retail", "Revenue.Delivery", 
-                         "Revenue.Resale", "Revenue.Adjustments", 
-                         "Revenue.Transmission", "Revenue.Other", "Uses.Consumed") #Revenue subparts are linearly dependent on total revenue
-
-# Create a new data frame without the excluded columns
-# df_pred <- df[, !names(df) %in% columns_to_exclude]
 
 # Define the columns to include in df_pred
 column_names <- c(
@@ -378,6 +386,12 @@ ggplot(df_pred, aes(x = Log_Revenue_Total)) +
        x = "Log(Revenue Total)", 
        y = "Frequency") +
   theme_minimal()
+
+```
+
+## Baseline Model
+
+```{r Baseline Model}
 ### Baseline Model
 # Fit OLS Model (Linear Regression) without cross-validation
 ols_model <- lm(Log_Revenue_Total ~ ., 
@@ -393,7 +407,11 @@ residuals <- df_pred$Log_Revenue_Total - predictions
 # Calculate RMSE (Root Mean Squared Error)
 rmse <- sqrt(mean(residuals^2))
 cat(paste("OLS Model RMSE:", rmse, "\n"))
+```
 
+## Cross Validation setup
+
+```{r cross validation}
 ### Cross Validation
 # Set up cross-validation control with 10 folds
 train_control <- trainControl(method = "cv", 
@@ -401,6 +419,11 @@ train_control <- trainControl(method = "cv",
                               summaryFunction = defaultSummary,
                               search = "grid",
                               savePredictions = "all")
+```
+
+## Model 1: Ridge Regression
+
+```{r Model 1: Ridge Regression}
 ### Ridge Regression
 ridge_model <- train(Log_Revenue_Total ~ ., 
                      data = df_pred, 
@@ -419,6 +442,12 @@ cat(paste("Ridge Regression RMSE:", ridge_model_rmse, "\n"))
 
 final_lambda_ridge <- ridge_model$bestTune$lambda
 cat(paste("Final lambda value for Ridge regression:", final_lambda_ridge, "\n"))
+
+```
+
+## Model 2: Lasso Regression
+
+```{r Model 2: Lasso Regression}
 ### Lasso Regression
 # Fit Lasso regression using glmnet with tuning of lambda and data standardization
 lasso_model <- train(Log_Revenue_Total ~ ., 
@@ -440,6 +469,12 @@ cat(paste("Lasso Regression Best RMSE:", lasso_model_rmse, "\n"))
 # Extract and print the best lambda value for Lasso regression
 final_lambda_lasso <- lasso_model$bestTune$lambda
 cat(paste("Final lambda value for Lasso regression:", final_lambda_lasso, "\n"))
+
+```
+
+## Model 3: Random Forest
+
+```{r Model 3: Random Forest}
 ### Random Forest
 # Fit a Random Forest model
 rf_model <- train(Log_Revenue_Total ~ ., 
@@ -455,13 +490,11 @@ print(rf_model$resample$RMSE)
 
 rf_model_rmse <- min(rf_model$results$RMSE)
 cat(paste("Random Forest RMSE:", rf_model_rmse, "\n"))
-
-
 ```
 
+# 7: Classification
 
-# 7: Classification 
-
+## Data Cleaning
 
 ```{r clean data for building classifiers}
 
@@ -497,9 +530,9 @@ numeric_cols <- sapply(df_clean, is.numeric) & names(df_clean) != "Uses.Consumed
 df_clean_scaled[numeric_cols] <- scale(df_clean[numeric_cols])
 
 
-``` 
+```
 
-
+## Classifier 1: K-NN
 
 ```{r Classifier 1: K-NN}
 
@@ -576,7 +609,7 @@ print(paste("0-1 Loss:", round(Err_CV_knn, 4)))
 
 ```
 
-
+## Classifier 2: Logistic Regression with Feature Selection
 
 ```{r Classfier 2: Logistic Regression with Feature Selection}
 
@@ -629,7 +662,7 @@ print(paste("Best lambda:", model_cv$bestTune$lambda))
 
 ```
 
-
+## Classifier 3: Decision Tree
 
 ```{r Classifier 3: Decision Tree}
 
@@ -670,6 +703,8 @@ print(paste("cp of chosen model:", model_grid$bestTune))
 
 ```
 
+## Comparing Classifiers
+
 ```{r compare classifiers, include=TRUE, echo=FALSE, results='asis'}
 
 Err_baseline <- round(sum(df$Uses.Consumed.Binary)/nrow(df), 4)
@@ -684,4 +719,3 @@ knitr::kable(Errs_table, col.names = c("Model", "Prediction Error (Mean 0-1 Loss
 
 print(Errs_table)
 ```
-
