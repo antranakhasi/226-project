@@ -1,0 +1,853 @@
+---
+title: "MS&E 226: Project Part 1 Code"
+author: "Antra Nakhasi & Sydney Loh"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include = TRUE, warning = FALSE)
+knitr::opts_chunk$set(tidy = TRUE, tidy.opts = list(width.cutoff = 60))
+
+options(width = 60) # Set width for knitting code chunks
+
+rm(list = ls()) # Clear environment 
+
+# Load necessary libraries
+library(tidyverse)
+library(dplyr)
+library(caret)
+library(kknn)
+library(reshape2)
+library(class)
+library(glmnet)
+library(e1071)
+library(rpart)
+library(tibble)
+library(randomForest)   
+library(xgboost)  
+library(quantreg)
+library(kernlab)
+
+set.seed(123) # Setting seed for reproducibility
+```
+
+# 2: Data Pre-processing
+
+```{r Pre Process, results='hide'}
+
+# load data
+df <- read.csv("electricity.csv")
+
+
+## pre process data
+
+# Convert Revenues.Retail to Revenue.Retail to match singular use of "Revenue" in all other column names
+colnames(df)[colnames(df) == "Revenues.Retail"] <- "Revenue.Retail"
+
+# Create binary outcome variable from Uses.Consumed (0 if = 0, 1 otherwise)
+df$Uses.Consumed.Binary <- ifelse(df$Uses.Consumed == 0, 0, 1)
+
+# Remove Retail.Total.Sales and Retail.Total.Customers columns (b/c not linearly independent, keep more granular columns)
+df <- df[, !names(df) %in% c("Retail.Total.Customers", "Retail.Total.Sales", "Sources.Total", "Uses.Total", 
+                             "Retail.Total.Revenue", "Retail.Total.Sales", "Retail.Total.Customers")]
+
+
+# Convert revenue breakdown columns, Revenue.______, into a categorical variable listing which stream had the greatest share of the total
+revenue_cols <- c("Retail.Residential.Revenue", "Retail.Commercial.Revenue", 
+                  "Retail.Industrial.Revenue", "Retail.Transportation.Revenue")
+
+# Find the sector with the maximum revenue and remove the revenue columns
+df <- df %>%
+  rowwise() %>%
+  mutate(
+    Max.Revenue.Sector = c("Residential", "Commercial", "Industrial", "Transportation")[which.max(c_across(all_of(revenue_cols)))]
+  ) %>%
+  ungroup() %>%
+  select(-all_of(revenue_cols)) 
+
+northeast_states <- c("CT", "ME", "MA", "NH", "RI", "VT", "NJ", "NY", "PA", "DC")
+midwest_states <- c("IL", "IN", "MI", "OH", "WI", "IA", "KS", "MN", "MO", "NE", "ND", "SD")
+south_states <- c("DE", "FL", "GA", "MD", "NC", "SC", "VA", "WV", "AL", "KY", "MS", "TN", "AR", "LA", "OK", "TX")
+west_states <- c("AZ", "CO", "ID", "MT", "NV", "NM", "UT", "WY", "AK", "CA", "HI", "OR", "WA")
+
+# Assign each state to its corresponding region
+df$Utility.Region <- case_when(
+  df$Utility.State %in% northeast_states ~ "Northeast",
+  df$Utility.State %in% midwest_states ~ "Midwest",
+  df$Utility.State %in% south_states ~ "South",
+  df$Utility.State %in% west_states ~ "West",
+  df$Utility.State == "CN" ~ "Canada",
+  TRUE ~ NA_character_ 
+)
+
+# Found one NA value where Utility.State was a blank string "" 
+# Omit since it was one case at random 
+df <- df[-which(is.na(df$Utility.Region)), ]
+
+```
+
+# 3: Hold Out Set
+
+```{r Create Holdout Set, results='hide'}
+# Total number of rows in the dataset
+n <- nrow(df)
+
+# Sample 20% of the data for the holdout set
+holdout_indices <- sample(1:n, size = floor(0.2 * n))
+
+# Create holdout and training sets
+holdout <- df[holdout_indices, ]
+df <- df[-holdout_indices, ]
+
+# Display the sizes of the datasets
+cat("Holdout Set Size:", nrow(holdout), "\n")
+cat("Training Set Size:", nrow(df), "\n")
+```
+
+# 5: Data Exploration
+
+## Correlations
+
+```{r Correlations with Revenue.Total, fig.show='hide', results='hide'}
+
+# Correlation the continuous outcome: Hours Worked Per Week 
+
+# Select relevant columns for analysis
+columns_of_interest <- names(df)[!names(df) %in% c("Utility.Number", "Utility.Name", "Utility.State")] # use a different visualization since 1-hot encoding would lead to 50 different states 
+
+# Filter data to include only columns of interest
+data_subset <- df %>% select(all_of(columns_of_interest))
+
+# Separate numeric and categorical columns
+numeric_columns <- names(data_subset)[sapply(data_subset, is.numeric)]
+categorical_columns <- setdiff(columns_of_interest, numeric_columns)
+
+# One-hot encode categorical variables
+dummies <- dummyVars(" ~ .", data = data_subset[categorical_columns])
+encoded_categorical_data <- predict(dummies, newdata = data_subset) %>% as.data.frame()
+
+# Combine numeric data with one-hot encoded categorical data
+encoded_data <- cbind(data_subset[numeric_columns], encoded_categorical_data)
+
+# Calculate all correlations
+correlations <- cor(encoded_data, use = "complete.obs")
+
+# Calculate correlations with "Hours_Worked_Per_Week"
+correlations_with_revenue <- correlations["Revenue.Total",]
+
+# Sort and display correlations
+sorted_correlations_revenue <- sort(correlations_with_revenue, decreasing = TRUE)
+# Create a data frame of sorted correlations for better readability
+sorted_correlations_revenue <- data.frame(
+  Variable = names(sorted_correlations_revenue),
+  Correlation_with_revenue = sorted_correlations_revenue
+)
+
+# Display the data frame in a readable format
+print(sorted_correlations_revenue, row.names = FALSE)
+
+top_correlated_vars <- head(sorted_correlations_revenue$Variable[-1], 5)
+# Generate scatterplots for each of the top correlated variables with Revenue.Total
+for (var in top_correlated_vars) {
+  p <- ggplot(df, aes_string(x = var, y = "Revenue.Total")) +
+    geom_point(alpha = 0.6, color = "blue") +
+    labs(title = paste("Scatterplot of", var, "vs Revenue.Total"),
+         x = var, y = "Revenue.Total") +
+    theme_minimal() +
+    geom_smooth(method = "lm", color = "red", se = FALSE)
+  
+  print(p)  # Explicitly print each plot
+}
+
+ggplot(sorted_correlations_revenue, aes(x = reorder(Variable, Correlation_with_revenue), 
+                                             y = Correlation_with_revenue)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +  # Flip coordinates for better readability
+  labs(title = "Correlation with Revenue.Total", 
+       x = "Variables", 
+       y = "Correlation Coefficient") +
+  theme_minimal()
+```
+
+```{r Correlations with Uses.Consumed.Binary, fig.show='hide', results='hide'}
+# Calculate correlations with binary outcome variable
+correlations_with_uses_consumed <- correlations["Uses.Consumed.Binary",]
+
+# Sort and display correlations
+sorted_correlations_uses_consumed <- sort(correlations_with_uses_consumed, decreasing = TRUE)
+
+# Create a data frame of sorted correlations for better readability
+sorted_correlations_uses_consumed <- data.frame(
+  Variable = names(sorted_correlations_uses_consumed),
+  Correlation_with_Uses_Consumed = sorted_correlations_uses_consumed
+)
+
+# Display the data frame in a readable format
+print(sorted_correlations_uses_consumed, row.names = FALSE)
+
+ggplot(sorted_correlations_uses_consumed, aes(x = reorder(Variable, Correlation_with_Uses_Consumed), 
+                                             y = Correlation_with_Uses_Consumed)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +  # Flip coordinates for better readability
+  labs(title = "Correlation with Revenue.Total", 
+       x = "Variables", 
+       y = "Correlation Coefficient") +
+  theme_minimal()
+
+```
+
+```{r correlation of covariates with each other, fig.show='hide', results='hide'}
+
+# Create a list of numeric columns, not including the binary outcome variable 
+cont_cov_columns <- numeric_columns[numeric_columns != "Uses.Consumed.Binary"]
+
+# Calculate correlations for continuous variables
+correlations_cont <- cor(data_subset[cont_cov_columns], use = "complete.obs")
+
+# Melt the correlation matrix for ggplot2
+cor<- melt(correlations_cont)
+
+# Create the heatmap
+ggplot(data = cor, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1, 1), space = "Lab", 
+                       name="Correlation") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 10, hjust = 1)) +
+  coord_fixed()
+
+
+```
+
+## Subgroups in data
+
+```{r means across categories, fig.show='hide', results='hide'}
+
+# Calculate means for utility.state
+state_means <- df %>%
+  summarise(across(-c(Utility.Number, Utility.Name, Utility.Type, Max.Revenue.Sector, Uses.Consumed.Binary, Utility.Region),
+                   ~ round(mean(.x, na.rm = TRUE), 5)),
+            .by = Utility.State)
+
+# Calculate means for utility.type
+type_means <- df %>%
+  summarise(across(-c(Utility.Number, Utility.Name, Utility.State, Max.Revenue.Sector, Uses.Consumed.Binary, Utility.Region),
+                   ~ round(mean(.x, na.rm = TRUE), 5)),
+            .by = Utility.Type)
+
+region_means <- df %>%
+  summarise(across(-c(Utility.Number, Utility.Name, Utility.State, Max.Revenue.Sector, Uses.Consumed.Binary, Utility.Type),
+                   ~ round(mean(.x, na.rm = TRUE), 5)),
+            .by = Utility.Region)
+
+View(state_means)
+View(type_means)
+View(region_means)
+variables_to_plot <- names(state_means)[-1]  # Exclude Utility.State
+plot_list <- list()
+```
+
+```{r Utility.State plots, fig.show='hide', results='hide'}
+# Loop through each variable and create a plot
+for (var in variables_to_plot) {
+  p <- ggplot(state_means, aes_string(x = "Utility.State", y = var)) +
+    geom_bar(stat = "identity", fill = "green") +
+    coord_flip() +
+    labs(title = paste("Mean", var, "by Utility State"),
+         x = "Utility State",
+         y = paste("Mean", var)) +
+    theme_minimal() +
+    theme(axis.text.y = element_text(size = 6, angle = 0),
+          axis.title.y = element_text(size = 10),
+          axis.title.x = element_text(size = 10),
+          plot.title = element_text(size = 12, face = "bold"))
+
+  plot_list[[var]] <- p
+}
+
+for (plot in plot_list) {
+  print(plot)
+}
+
+
+```
+
+```{r Utility.Type plots, fig.show='hide', results='hide'}
+# Create plots for utility type means
+variables_to_plot_type <- names(type_means)[-1]  # Exclude Utility.Type
+plot_list_type <- list()
+
+# Loop through each variable and create a plot for utility type
+for (var in variables_to_plot_type) {
+  p <- ggplot(type_means, aes_string(x = "Utility.Type", y = var)) +
+    geom_bar(stat = "identity", fill = "coral") +
+    coord_flip() +
+    labs(title = paste("Mean", var, "by Utility Type"),
+         x = "Utility Type",
+         y = paste("Mean", var)) +
+    theme_minimal() +
+    theme(axis.text.y = element_text(size = 6, angle = 0),
+          axis.title.y = element_text(size = 10),
+          axis.title.x = element_text(size = 10),
+          plot.title = element_text(size = 12, face = "bold"))
+
+  plot_list_type[[var]] <- p
+}
+
+for (plot in plot_list_type) {
+  print(plot)
+}
+
+```
+
+```{r Utility.Region Plots, fig.show='hide', results='hide'}
+# Define the list of variables to plot, excluding the grouping column (Utility.Region)
+variables_to_plot <- names(region_means)[-1]
+
+# Initialize an empty list to store the plots
+plot_list <- list()
+
+# Loop through each variable in region_means and create a plot
+for (var in variables_to_plot) {
+  p <- ggplot(region_means, aes_string(x = "Utility.Region", y = var)) +
+    geom_bar(stat = "identity", fill = "green") +
+    coord_flip() +
+    labs(title = paste("Mean", var, "by Utility Region"),
+         x = "Utility Region",
+         y = paste("Mean", var)) +
+    theme_minimal() +
+    theme(axis.text.y = element_text(size = 6, angle = 0),
+          axis.title.y = element_text(size = 10),
+          axis.title.x = element_text(size = 10),
+          plot.title = element_text(size = 12, face = "bold"))
+  
+  # Add each plot to the list
+  plot_list[[var]] <- p
+}
+
+# Print each plot for region_means
+for (plot in plot_list) {
+  print(plot)
+}
+```
+
+# 6: Regression
+
+## Data Transformations
+
+```{r data transformations}
+# set seed
+set.seed(123)
+
+### Choosing prediction error metric
+# Calculate summary statistics for revenue data
+mean_revenue <- mean(df$Revenue.Total)
+median_revenue <- median(df$Revenue.Total)
+std_dev_revenue <- sd(df$Revenue.Total)
+iqr_revenue <- IQR(df$Revenue.Total)
+
+# Print summary statistics
+print(paste("Mean Revenue:", mean_revenue))
+print(paste("Median Revenue:", median_revenue))
+print(paste("Standard Deviation:", std_dev_revenue))
+print(paste("IQR:", iqr_revenue))
+
+# Define the columns to include in df_pred
+column_names <- c(
+  "Demand.Summer.Peak", "Demand.Winter.Peak", "Sources.Generation", "Sources.Purchased",
+  "Sources.Other", "Uses.Retail", "Uses.Resale", "Uses.No.Charge", "Uses.Consumed", "Uses.Losses",
+  "Retail.Residential.Customers", "Retail.Commercial.Customers", "Retail.Industrial.Customers",
+  "Retail.Transportation.Customers", "Utility.Region", "Max.Revenue.Sector", "Revenue.Total", "Utility.Type"
+)
+
+# Create df_pred with only the specified columns from df
+df_pred <- df[, column_names]
+
+# # Display df_pred
+# df_pred
+
+### Applying data transformations
+# Applying log transformation to the Revenue.Total column
+df_pred$Log_Revenue_Total <- log1p(df_pred$Revenue.Total)
+
+# Histogram
+ggplot(df_pred, aes(x = Revenue.Total)) + 
+  geom_histogram(binwidth = 5000, fill = "skyblue", color = "black", alpha = 0.7) + 
+  labs(title = "Histogram of Revenue Total", x = "Revenue Total", y = "Frequency") +
+  theme_minimal()
+
+# Histogram of log-transformed Revenue.Total (after scaling)
+ggplot(df_pred, aes(x = Log_Revenue_Total)) + 
+  geom_histogram(binwidth = 0.1, fill = "lightgreen", color = "black", alpha = 0.7) + 
+  labs(title = "Histogram of Log-transformed Revenue Total", 
+       x = "Log(Revenue Total)", 
+       y = "Frequency") +
+  theme_minimal()
+
+```
+
+## Baseline Model
+
+```{r Baseline Model}
+### Baseline Model
+# Fit OLS Model (Linear Regression) without cross-validation
+ols_model <- lm(Log_Revenue_Total ~ ., 
+                data = df_pred)  # Fit the model on the entire dataset
+
+# Print the summary of the OLS model
+summary(ols_model)
+
+# Get the residuals to calculate RMSE
+predictions <- predict(ols_model, newdata = df_pred)
+residuals <- df_pred$Log_Revenue_Total - predictions
+
+# Calculate RMSE (Root Mean Squared Error)
+rmse <- sqrt(mean(residuals^2))
+cat(paste("OLS Model RMSE:", rmse, "\n"))
+```
+
+## Cross Validation setup
+
+```{r cross validation}
+### Cross Validation
+# Set up cross-validation control with 10 folds
+train_control <- trainControl(method = "cv", 
+                              number = 10, 
+                              summaryFunction = defaultSummary,
+                              search = "grid",
+                              savePredictions = "all")
+```
+
+## Model 1: Ridge Regression
+
+```{r Model 1: Ridge Regression}
+### Ridge Regression
+ridge_model <- train(Log_Revenue_Total ~ ., 
+                     data = df_pred, 
+                     method = "glmnet",  # glmnet is used for regularized regression
+                     trControl = train_control,
+                     metric = "RMSE", 
+                     preProcess = "scale",  # Standardize the data
+                     tuneGrid = expand.grid(alpha = 0, lambda = seq(0, 1, length = 100))) # alpha=0 for Ridge
+
+# Print CV error 
+cat("Ridge Regression CV RMSE for each fold:\n")
+print(ridge_model$resample$RMSE)
+
+ridge_model_rmse <- min(ridge_model$results$RMSE)
+cat(paste("Ridge Regression RMSE:", ridge_model_rmse, "\n"))
+
+final_lambda_ridge <- ridge_model$bestTune$lambda
+cat(paste("Final lambda value for Ridge regression:", final_lambda_ridge, "\n"))
+
+```
+
+## Model 2: Lasso Regression
+
+```{r Model 2: Lasso Regression}
+### Lasso Regression
+# Fit Lasso regression using glmnet with tuning of lambda and data standardization
+lasso_model <- train(Log_Revenue_Total ~ ., 
+                     data = df_pred, 
+                     method = "glmnet",  # glmnet for regularized regression
+                     trControl = train_control,
+                     metric = "RMSE",  # RMSE for model evaluation
+                     preProcess = "scale",  # Standardize the data
+                     tuneGrid = expand.grid(alpha = 1, lambda = seq(0, 1, length = 100)))  # Lasso: alpha = 1
+
+# Print CV error (RMSE for each fold)
+cat("Lasso Regression CV RMSE for each fold:\n")
+print(lasso_model$resample$RMSE)
+
+# Extract and print the best RMSE for Lasso Regression
+lasso_model_rmse <- min(lasso_model$results$RMSE)
+cat(paste("Lasso Regression Best RMSE:", lasso_model_rmse, "\n"))
+
+# Extract and print the best lambda value for Lasso regression
+final_lambda_lasso <- lasso_model$bestTune$lambda
+cat(paste("Final lambda value for Lasso regression:", final_lambda_lasso, "\n"))
+
+```
+
+## Model 3: Random Forest
+
+```{r Model 3: Random Forest}
+### Random Forest
+# Fit a Random Forest model
+rf_model <- train(Log_Revenue_Total ~ ., 
+                  data = df_pred, 
+                  method = "rf",  # Random Forest regression
+                  trControl = train_control,
+                  metric = "RMSE",
+                  tuneGrid = expand.grid(mtry = sqrt(ncol(df_pred)))) # Hyperparameter tuning for mtry
+
+# Print CV error
+cat("Random Forest CV RMSE for each fold:\n")
+print(rf_model$resample$RMSE)
+
+rf_model_rmse <- min(rf_model$results$RMSE)
+cat(paste("Random Forest RMSE:", rf_model_rmse, "\n"))
+```
+
+# 7: Classification
+
+## Data Cleaning
+
+```{r clean data for building classifiers}
+
+# Select specific columns from the dataframe based on positive correlation > 0.1 or negative correlation <-0.1
+df_clean <- df[, c("Uses.Consumed.Binary", # Binary outcome variable
+                   "Utility.Type", # Positively or negatively correlated with outcome, depending on factor level 
+                   "Demand.Winter.Peak", # Positively correlated with outcome
+                   "Demand.Summer.Peak", # Positively correlated with outcome
+                   "Max.Revenue.Sector", # Negatively correlated with outcome
+                   "Revenue.Retail", # Positively correlated with outcome
+                   grep("^Retail\\.", names(df), value = TRUE))] # Positively correlated with outcome
+
+
+# Loop through each column in the dataset and apply the factor transformation to each non-numeric (categorical) variable
+df_clean[] <- lapply(df_clean, function(x) {
+  if (!is.numeric(x)) {
+    factor(x, levels = unique(x))
+  } else {
+    x
+  }
+})
+
+df_clean$Uses.Consumed.Binary <- factor(df_clean$Uses.Consumed.Binary, levels = c("0", "1"))
+levels(df_clean$Uses.Consumed.Binary) <- make.names(levels(df_clean$Uses.Consumed.Binary))
+
+# Create a copy of the original dataframe to store the scaled data
+df_clean_scaled <- df_clean
+
+# Identify numeric columns, excluding 'Uses.Consumed.Binary'
+numeric_cols <- sapply(df_clean, is.numeric) & names(df_clean) != "Uses.Consumed.Binary"
+
+# Apply scale() to the selected numeric columns
+df_clean_scaled[numeric_cols] <- scale(df_clean[numeric_cols])
+
+
+```
+
+## Classifier 1: K-NN
+
+```{r Classifier 1: K-NN}
+
+# Split the data into features and target variable
+X <- df_clean_scaled[, !names(df_clean) %in% "Uses.Consumed.Binary"] # continuous outcome variable and linear combination of other columns
+# Step 1: Prepare the data
+# Identify numeric and categorical columns
+knn_numeric_cols <- sapply(X, is.numeric)
+knn_categorical_cols <- sapply(X, function(x) is.factor(x) | is.character(x))
+
+# Create dummy variables for categorical features
+dummy <- dummyVars(" ~ .", data = X[, knn_categorical_cols])
+categorical_dummy <- predict(dummy, newdata = X[, knn_categorical_cols])
+
+# Combine numeric and dummy-coded categorical variables
+X <- cbind(X[, knn_numeric_cols], categorical_dummy)
+
+# Ensure the target variable is a factor
+y <- df_clean_scaled$Uses.Consumed.Binary
+
+
+# Step 2: Define a function to find the best k using cross-validation
+
+# Define a custom summary function for 0-1 loss
+zero_one_loss <- function(data, lev = NULL, model = NULL) {
+  loss <- mean(data$obs != data$pred)
+  c(loss = loss)
+}
+
+# Find_best_k function
+find_best_k <- function(X, y, k_range, distance_metric) {
+  set.seed(123)
+
+  # Define custom summary function for 0-1 loss
+  zero_one_loss <- function(data, lev = NULL, model = NULL) {
+    loss <- mean(data$obs != data$pred)
+    c(loss = loss)
+  }
+
+  control <- trainControl(method = "cv",
+                          number = 10,
+                          summaryFunction = zero_one_loss)
+
+  grid <- expand.grid(k = k_range)
+
+  knn_model <- train(x = X, y = y,
+                     method = "knn",
+                     tuneGrid = grid,
+                     trControl = control,
+                     metric = "loss",
+                     maximize = FALSE)  # We want to minimize the loss
+
+  best_k <- knn_model$bestTune$k
+  best_loss <- min(knn_model$results$loss)
+
+  return(list(best_k = best_k, mean_0_1_loss = best_loss))
+}
+
+# Step 3: Find the best k
+k_range <- seq(1, 20, by = 2)
+best_k <- find_best_k(X, y, k_range)
+
+
+# Step 4: Train the final k-NN model with the best k
+knn_class_final_model <- knn(train = X, test = X, cl = y, k = best_k[[1]])
+
+# Save mean 0-1 loss for best k
+Err_CV_knn <- best_k[[2]]
+
+
+# Print results
+print(paste("Best k:", best_k[[1]]))
+print(paste("0-1 Loss:", round(Err_CV_knn, 4)))
+
+```
+
+## Classifier 2: Logistic Regression with Feature Selection
+
+```{r Classfier 2: Logistic Regression with Feature Selection}
+
+# Create model formula
+lr_formula <- as.formula("Uses.Consumed.Binary ~ Utility.Type + Max.Revenue.Sector + Demand.Winter.Peak + Demand.Summer.Peak + Revenue.Retail + Revenue.Retail:Max.Revenue.Sector")
+
+# Set up cross-validation for classification
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+  classProbs = TRUE,
+  summaryFunction = defaultSummary
+)
+
+# Define grid of lambda values to tune for regularization
+tune_grid <- expand.grid(
+  alpha = 0,       # Set alpha = 0 for ridge regression (L2 regularization)
+  lambda = seq(0.001, 0.1, by = 0.01) # Define a sequence of lambda values
+)
+
+# Train the logistic regression model with cross-validation and lambda tuning
+model_cv <- train(
+  lr_formula,
+  data = df_clean_scaled,
+  method = "glmnet",
+  family = "binomial",
+  trControl = ctrl,
+  metric = "Accuracy",
+  tuneGrid = tune_grid
+)
+
+# Calculate 0-1 loss for each fold
+zero_one_loss <- 1 - model_cv$resample$Accuracy
+
+# Calculate mean 0-1 loss across folds
+Err_CV_logr <- mean(zero_one_loss)
+
+# Train final model on all data with the best lambda
+lr_class_final_model <- glmnet(
+  as.matrix(df_clean_scaled[, all.vars(lr_formula)[-1]]), 
+  df_clean_scaled$Uses.Consumed.Binary, 
+  alpha = 0,
+  lambda = model_cv$bestTune$lambda,
+  family = "binomial"
+)
+
+# Print results
+print(paste("0-1 Loss:", round(Err_CV_logr, 4)))
+print(paste("Best lambda:", model_cv$bestTune$lambda))
+
+```
+
+## Classifier 3: Decision Tree
+
+```{r Classifier 3: Decision Tree}
+
+set.seed(123)  # For reproducibility
+
+# Create model formula
+formula <- as.formula("Uses.Consumed.Binary ~ Utility.Type + Max.Revenue.Sector + Demand.Winter.Peak + Demand.Summer.Peak + Revenue.Retail + Revenue.Retail:Max.Revenue.Sector")
+
+# Define the hyperparameter grid
+hyper_grid <- expand.grid(cp = seq(0.01, 0.1, by = 0.01))
+
+# Set up 10-fold cross-validation with Accuracy as the selection metric
+ctrl <- trainControl(
+  method = "cv",
+  number = 10
+)
+
+# Perform grid search with cross-validation
+model_grid <- train(
+  formula,
+  data = df_clean_scaled,
+  method = "rpart",
+  trControl = ctrl,
+  tuneGrid = hyper_grid,
+  metric = "Accuracy"
+)
+
+# Get the best model
+dt_class_final_model <- model_grid$finalModel
+
+# Calculate the average cross-validation error (1 - Accuracy)
+Err_CV_dt <- 1 - max(model_grid$results$Accuracy)
+
+# Display the average cross-validation error
+print(paste("0-1 Loss:", round(Err_CV_dt, 4)))
+# Display the best model parameters
+print(paste("cp of chosen model:", model_grid$bestTune))
+
+```
+
+## Comparing Classifiers
+
+```{r compare classifiers, include=TRUE, echo=FALSE, results='asis'}
+
+Err_baseline <- round(sum(df$Uses.Consumed.Binary)/nrow(df), 4)
+
+Errs <- c(Baseline = Err_baseline, Knn = round(Err_CV_knn, 4), Logr = round(Err_CV_logr, 4), DT = round(Err_CV_dt, 4))
+
+# Convert to a tibble
+Errs_table <- tibble(Model = c("Baseline", "K-Nearest Neighbors", "Logistic Regression (Ridge)", "Decision Tree"), Error = sprintf("%.4f", Errs))
+
+# Print the table
+knitr::kable(Errs_table, col.names = c("Model", "Prediction Error (Mean 0-1 Loss)"))
+
+print(Errs_table)
+```
+
+
+
+# Project Part 2 
+
+## 1: Prediction on the holdout set
+
+### Classification 
+
+#### a)
+
+In part 1, the logistic regression classifier had the best performance. This is the classifier that will be used for prediction on the holdout set. 
+
+```{r Classification prediction with winning modeling strategy}
+# Select specific columns from the dataframe based on positive correlation > 0.1 or negative correlation <-0.1
+holdout_clean <- holdout[, c("Uses.Consumed.Binary", # Binary outcome variable
+                   "Utility.Type", # Positively or negatively correlated with outcome, depending on factor level 
+                   "Demand.Winter.Peak", # Positively correlated with outcome
+                   "Demand.Summer.Peak", # Positively correlated with outcome
+                   "Max.Revenue.Sector", # Negatively correlated with outcome
+                   "Revenue.Retail", # Positively correlated with outcome
+                   grep("^Retail\\.", names(df), value = TRUE))] # Positively correlated with outcome
+
+
+# Loop through each column in the dataset and apply the factor transformation to each non-numeric (categorical) variable
+holdout_clean[] <- lapply(holdout_clean, function(x) {
+  if (!is.numeric(x)) {
+    factor(x, levels = unique(x))
+  } else {
+    x
+  }
+})
+
+holdout_clean$Uses.Consumed.Binary <- factor(holdout_clean$Uses.Consumed.Binary, levels = c("0", "1"))
+levels(holdout_clean$Uses.Consumed.Binary) <- make.names(levels(holdout_clean$Uses.Consumed.Binary))
+
+
+# Scale numeric columns (use same scaling parameters as training data)
+holdout_clean_scaled <- holdout_clean
+numeric_cols_holdout <- sapply(holdout_clean, is.numeric)  # Identify numeric columns
+holdout_clean_scaled[numeric_cols_holdout] <- scale(
+  holdout_clean[numeric_cols_holdout], 
+  center = attr(scale(df_clean[numeric_cols]), "scaled:center"), 
+  scale = attr(scale(df_clean[numeric_cols]), "scaled:scale")
+)
+
+# Subset the holdout dataset to include only variables in the formula
+required_columns <- all.vars(formula)[-1]  # Exclude the response variable
+holdout_clean <- holdout[, required_columns, drop = FALSE]  # Keep only required columns
+
+
+# subset only covariates in the formula 
+formula_vars <- all.vars(lr_formula)
+
+# Subset the dataframe to include only the columns in the formula
+holdout_clean_scaled <- holdout_clean_scaled[, formula_vars, drop = FALSE]
+
+# Separate outcome and covarites
+
+Y_holdout <- holdout_clean_scaled$Uses.Consumed.Binary
+
+X_holdout <- holdout_clean_scaled[, colnames(holdout_clean_scaled) != "Uses.Consumed.Binary"]
+
+# Convert to matrix for glmnet predictions
+holdout_class_matrix <- as.matrix(X_holdout)
+
+
+# Make predictions (probabilities)
+predictions_prob <- predict(
+  lr_class_final_model, 
+  newx = holdout_class_matrix, 
+  s = model_cv$bestTune$lambda, 
+  type = "response"
+)
+
+# Convert probabilities to binary predictions
+predictions_binary <- ifelse(predictions_prob >= 0.5, "1", "0")
+
+# Calculate 0-1 loss
+true_labels <- holdout$Uses.Consumed.Binary  # True labels from holdout
+misclassified <- sum(predictions_binary != true_labels)
+zero_one_loss_holdout <- misclassified / length(true_labels)
+
+# Print results
+print(paste("0-1 Loss on holdout data:", round(zero_one_loss_holdout, 4)))
+
+
+```
+
+
+
+## 2: Inference
+
+#### (c) 
+
+```{r fit model on the holdout set} 
+
+# Define the columns to keep 
+column_names <- c(
+  "Demand.Summer.Peak", "Demand.Winter.Peak", "Sources.Generation", "Sources.Purchased",
+  "Sources.Other", "Uses.Retail", "Uses.Resale", "Uses.No.Charge", "Uses.Consumed", "Uses.Losses",
+  "Retail.Residential.Customers", "Retail.Commercial.Customers", "Retail.Industrial.Customers",
+  "Retail.Transportation.Customers", "Utility.Region", "Max.Revenue.Sector", "Revenue.Total", "Utility.Type"
+)
+
+# Create holdout_pred with only the specified columns from holdout
+holdout_pred <- holdout[, column_names]
+
+### Applying data transformations
+# Applying log transformation to the Revenue.Total column
+holdout_pred$Log_Revenue_Total <- log1p(holdout_pred$Revenue.Total)
+
+# Prepare the holdout dataset
+holdout_pred <- holdout[, column_names]
+holdout_pred$Log_Revenue_Total <- log(holdout_pred$Revenue.Total)
+
+# Prepare the data
+X <- model.matrix(Log_Revenue_Total ~ ., data = holdout_pred)[, -1]  # Design matrix (exclude intercept)
+y <- holdout_pred$Log_Revenue_Total  # Response variable
+
+# Prepare the input matrices for glmnet
+x <- model.matrix(Log_Revenue_Total ~ ., data = df_pred)[, -1]  # Remove intercept column
+y <- df_pred$Log_Revenue_Total
+
+# Fit the Ridge regression model with predefined lambda
+ridge_model <- glmnet(x, y, alpha = 0, lambda = final_lambda_ridge, standardize = TRUE)
+
+# View model coefficients
+print(coef(ridge_model))
+
+
+```
