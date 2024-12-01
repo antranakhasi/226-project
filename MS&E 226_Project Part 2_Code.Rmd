@@ -28,6 +28,9 @@ library(randomForest)
 library(xgboost)  
 library(quantreg)
 library(kernlab)
+library(boot)
+library(ggplot2)
+
 
 set.seed(123) # Setting seed for reproducibility
 ```
@@ -814,9 +817,18 @@ print(paste("0-1 Loss on holdout data:", round(zero_one_loss_holdout, 4)))
 
 #### (c) 
 
-```{r fit model on the holdout set} 
+```{r 2c Fit to test data Ridge} 
 
-# Define the columns to keep 
+# manually refit final ridge model 
+
+# Refit the model manually using glmnet
+X_train <- model.matrix(Log_Revenue_Total ~ ., data = df_pred)[, -1]
+y_train <- df_pred$Log_Revenue_Total
+
+final_ridge_model <- glmnet(X_train, y_train, alpha = 0, lambda = final_lambda_ridge, standardize = TRUE)
+
+
+# Define the columns to include in df_pred
 column_names <- c(
   "Demand.Summer.Peak", "Demand.Winter.Peak", "Sources.Generation", "Sources.Purchased",
   "Sources.Other", "Uses.Retail", "Uses.Resale", "Uses.No.Charge", "Uses.Consumed", "Uses.Losses",
@@ -824,30 +836,396 @@ column_names <- c(
   "Retail.Transportation.Customers", "Utility.Region", "Max.Revenue.Sector", "Revenue.Total", "Utility.Type"
 )
 
-# Create holdout_pred with only the specified columns from holdout
-holdout_pred <- holdout[, column_names]
+# save a copy of the holdout dataset to be transformed/cleaned 
+# Create df_test with only the specified columns from holdout
+df_test <- holdout[, column_names]
 
-### Applying data transformations
-# Applying log transformation to the Revenue.Total column
-holdout_pred$Log_Revenue_Total <- log1p(holdout_pred$Revenue.Total)
+# Log-transform the Revenue.Total column in the test set to match training
+df_test$Log_Revenue_Total <- log1p(df_test$Revenue.Total)
 
-# Prepare the holdout dataset
-holdout_pred <- holdout[, column_names]
-holdout_pred$Log_Revenue_Total <- log(holdout_pred$Revenue.Total)
+# Extract predictors (X) and response variable (y) for the test set
+X_test <- model.matrix(Log_Revenue_Total ~ ., data = df_test)[, -1]
+y_test <- df_test$Log_Revenue_Total
 
-# Prepare the data
-X <- model.matrix(Log_Revenue_Total ~ ., data = holdout_pred)[, -1]  # Design matrix (exclude intercept)
-y <- holdout_pred$Log_Revenue_Total  # Response variable
+# Refit the ridge model on the test set using the final lambda from training
+ridge_test <- glmnet(X_test, y_test, alpha = 0, lambda = final_lambda_ridge, standardize = TRUE)
 
-# Prepare the input matrices for glmnet
-x <- model.matrix(Log_Revenue_Total ~ ., data = df_pred)[, -1]  # Remove intercept column
-y <- df_pred$Log_Revenue_Total
+# Extract coefficients from the test set
+ridge_test_coefs <- coef(ridge_test)
 
-# Fit the Ridge regression model with predefined lambda
-ridge_model <- glmnet(x, y, alpha = 0, lambda = final_lambda_ridge, standardize = TRUE)
+# Extract coefficients from training and holdout models
+training_coefs <- as.matrix(coef(final_ridge_model, s = final_lambda_ridge))
+holdout_coefs <- as.matrix(ridge_test_coefs)
 
-# View model coefficients
-print(coef(ridge_model))
+# Remove the intercept term (row with name "(Intercept)") from both coefficient matrices
+training_coefs <- training_coefs[rownames(training_coefs) != "(Intercept)", , drop = FALSE]
+holdout_coefs <- holdout_coefs[rownames(holdout_coefs) != "(Intercept)", , drop = FALSE]
+
+# Ensure feature names match between the training and holdout coefficients
+common_features <- intersect(rownames(training_coefs), rownames(holdout_coefs))
+
+# Subset coefficients to only include common features
+training_coefs <- training_coefs[common_features, , drop = FALSE]
+holdout_coefs <- holdout_coefs[common_features, , drop = FALSE]
+
+# Combine coefficients into a comparison data frame
+comparison <- data.frame(
+  Predictor = common_features,
+  Training_Coefs = round(as.numeric(training_coefs), 8),
+  Holdout_Coefs = round(as.numeric(holdout_coefs), 8)
+)
+
+# Sort the comparison data frame in decreasing order of Training_Coefs
+comparison <- comparison[order(-comparison$Training_Coefs), ]
+
+# Set options to avoid scientific notation
+options(scipen = 999)
+
+# Display the comparison
+print("Comparison of coefficients from training and holdout data:")
+print(comparison)
+
+
+```
+
+
+```{r 2d bootstrap Ridge}
+
+# Function to fit Ridge on bootstrap sample and return coefficients
+bootstrap_ridge <- function(data, indices, lambda) {
+  # Bootstrap sampling
+  boot_sample <- data[indices, ]
+  
+  # Create the model matrix from the bootstrap sample
+  X_boot <- model.matrix(Log_Revenue_Total ~ ., data = boot_sample)[, -1]
+  y_boot <- boot_sample$Log_Revenue_Total
+  
+  # Ensure that X_boot has the same column names as the original data
+  full_X <- model.matrix(Log_Revenue_Total ~ ., data = data)[, -1]
+  full_coefs <- numeric(ncol(full_X))  # Create a vector for all predictors (set to 0 initially)
+  names(full_coefs) <- colnames(full_X)  # Name it with the original predictor names
+  
+  # Fit Ridge model
+  ridge_fit <- glmnet(X_boot, y_boot, alpha = 0, lambda = lambda, standardize = TRUE)
+  
+  # Extract coefficients (excluding intercept)
+  coefs <- as.vector(coef(ridge_fit)[-1])  # Exclude intercept
+  coef_names <- colnames(X_boot)  # Names of predictors in this bootstrap sample
+  
+  # Assign the coefficients to the correct positions
+  full_coefs[coef_names] <- coefs
+  
+  return(full_coefs)
+}
+
+# Set up bootstrap
+set.seed(123)
+n_boot <- 1000  # Number of bootstrap samples
+X_train <- model.matrix(Log_Revenue_Total ~ ., data = df_pred)[, -1]
+y_train <- df_pred$Log_Revenue_Total
+
+
+# Perform bootstrap
+bootstrap_results <- boot(
+  data = df_pred,
+  statistic = bootstrap_ridge,
+  R = n_boot,
+  lambda = final_lambda_ridge
+)
+
+# Compute confidence intervals for each coefficient
+bootstrap_cis <- apply(bootstrap_results$t, 2, function(coefs) {
+  quantile(coefs, probs = c(0.025, 0.975))
+})
+
+# Format as a data frame
+cis_df <- data.frame(
+  Predictor = colnames(X_train),
+  CI_Lower = bootstrap_cis[1, ],
+  CI_Upper = bootstrap_cis[2, ]
+)
+
+
+## Compare to the confidence intervals computed in the standard regression output
+
+# Identify numeric predictors
+numeric_predictors <- sapply(df_pred[predictor_columns], is.numeric)
+
+# Standardize only numeric predictors
+df_pred_standardized <- df_pred
+df_pred_standardized[names(numeric_predictors)[numeric_predictors]] <- scale(
+  df_pred[names(numeric_predictors)[numeric_predictors]]
+)
+
+# # See that non-numeric columns remain unchanged
+# print("Standardized dataset:")
+# print(head(df_pred_standardized))
+
+# Fit OLS regression with standardized predictors
+ols_model_standardized <- lm(Log_Revenue_Total ~ ., data = df_pred_standardized)
+
+# Extract OLS confidence intervals
+ols_cis_standardized <- confint(ols_model_standardized, level = 0.95)
+ols_cis_df_standardized <- data.frame(
+  Predictor = rownames(ols_cis_standardized),
+  OLS_CI_Lower_Standardized = ols_cis_standardized[, 1],
+  OLS_CI_Upper_Standardized = ols_cis_standardized[, 2]
+)
+
+# Merge with Bootstrap confidence intervals for comparison
+comparison_ridge_OLS <- merge(
+  cis_df,  # Bootstrap confidence intervals from Ridge
+  ols_cis_df_standardized,
+  by = "Predictor",
+  all.x = TRUE
+)
+
+# Display the comparison
+print("Comparison of Bootstrap and Standardized OLS Confidence Intervals:")
+print(comparison_ridge_OLS)
+
+
+# visualize the difference in Ridge vs. OLS CIs
+
+# Calculate confidence interval sizes for Ridge and OLS
+comparison_ridge_OLS$Ridge_CI_Size <- comparison_ridge_OLS$CI_Upper - comparison_ridge_OLS$CI_Lower
+comparison_ridge_OLS$OLS_CI_Size <- comparison_ridge_OLS$OLS_CI_Upper_Standardized - comparison_ridge_OLS$OLS_CI_Lower_Standardized
+
+# Reshape the data for plotting
+ci_data_ridge <- comparison_ridge_OLS %>%
+  select(Predictor, Ridge_CI_Size, OLS_CI_Size) %>%
+  pivot_longer(cols = c(Ridge_CI_Size, OLS_CI_Size), 
+               names_to = "Method", 
+               values_to = "CI_Size")
+
+# Rename methods for better readability
+ci_data_ridge$Method <- ifelse(ci_data_ridge$Method == "Ridge_CI_Size", "Ridge", "OLS")
+
+# Create the density plot
+ggplot(ci_data_ridge, aes(x = CI_Size, fill = Method)) +
+  geom_density(alpha = 0.5) +
+  scale_x_log10() +
+  labs(
+    title = "Density Plot of Confidence Interval Sizes: Ridge vs. OLS",
+    x = "Confidence Interval Size",
+    y = "Density"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    legend.title = element_blank()
+  )
+
+# violin plot
+ggplot(ci_data_ridge, aes(x = Method, y = CI_Size)) +
+  geom_violin(fill = "lightblue") +
+  geom_boxplot(width = 0.1, fill = "white") +
+  theme_minimal() +
+  labs(title = "Distribution of CI_Size by Group", x = "Group", y = "CI_Size")
+
+
+
+```
+
+
+
+```{r 2c Fit to test data Lasso}
+
+# Define the columns to include in df_pred
+column_names <- c(
+  "Demand.Summer.Peak", "Demand.Winter.Peak", "Sources.Generation", "Sources.Purchased",
+  "Sources.Other", "Uses.Retail", "Uses.Resale", "Uses.No.Charge", "Uses.Consumed", "Uses.Losses",
+  "Retail.Residential.Customers", "Retail.Commercial.Customers", "Retail.Industrial.Customers",
+  "Retail.Transportation.Customers", "Utility.Region", "Max.Revenue.Sector", "Revenue.Total", "Utility.Type"
+)
+
+# save a copy of the holdout dataset to be transformed/cleaned 
+# Create df_test with only the specified columns from holdout
+df_test <- holdout[, column_names]
+
+# Log-transform the Revenue.Total column in the test set to match training
+df_test$Log_Revenue_Total <- log1p(df_test$Revenue.Total)
+
+# # Extract predictors (X) and response variable (y) for the test set
+# X_test <- model.matrix(Log_Revenue_Total ~ ., data = df_test)[, -1]
+# y_test <- df_test$Log_Revenue_Total
+
+# Refit the Lasso model on the test set using the final lambda from training
+lasso_test <- glmnet(X_test, y_test, alpha = 1, lambda = final_lambda_lasso, standardize = TRUE)
+
+# Extract coefficients from the test set
+lasso_test_coefs <- coef(lasso_test)
+
+# Extract coefficients from training and holdout models
+training_coefs <- as.matrix(coef(lasso_model$finalModel, s = final_lambda_lasso))
+holdout_coefs <- as.matrix(lasso_test_coefs)
+
+# Remove the intercept term (row with name "(Intercept)") from both coefficient matrices
+training_coefs <- training_coefs[rownames(training_coefs) != "(Intercept)", , drop = FALSE]
+holdout_coefs <- holdout_coefs[rownames(holdout_coefs) != "(Intercept)", , drop = FALSE]
+
+# Ensure feature names match between the training and holdout coefficients
+common_features <- intersect(rownames(training_coefs), rownames(holdout_coefs))
+
+# Subset coefficients to only include common features
+training_coefs <- training_coefs[common_features, , drop = FALSE]
+holdout_coefs <- holdout_coefs[common_features, , drop = FALSE]
+
+# Combine coefficients into a comparison data frame
+comparison <- data.frame(
+  Predictor = common_features,
+  Training_Coefs = round(as.numeric(training_coefs), 8),
+  Holdout_Coefs = round(as.numeric(holdout_coefs), 8)
+)
+
+# Sort the comparison data frame in decreasing order of Training_Coefs
+comparison <- comparison[order(-comparison$Training_Coefs), ]
+
+# Set options to avoid scientific notation
+options(scipen = 999)
+
+# Display the comparison
+print("Comparison of coefficients from training and holdout data:")
+print(comparison)
+
+```
+
+
+```{r 2d bootstrap Lasso}
+
+# Function to fit Lasso on bootstrap sample and return coefficients
+bootstrap_lasso <- function(data, indices, lambda) {
+  # Bootstrap sampling
+  boot_sample <- data[indices, ]
+  
+  # Create the model matrix from the bootstrap sample
+  X_boot <- model.matrix(Log_Revenue_Total ~ ., data = boot_sample)[, -1]
+  y_boot <- boot_sample$Log_Revenue_Total
+  
+  # Ensure that X_boot has the same column names as the original data
+  full_X <- model.matrix(Log_Revenue_Total ~ ., data = data)[, -1]
+  full_coefs <- numeric(ncol(full_X))  # Create a vector for all predictors (set to 0 initially)
+  names(full_coefs) <- colnames(full_X)  # Name it with the original predictor names
+  
+  # Fit Lasso model
+  lasso_fit <- glmnet(X_boot, y_boot, alpha = 1, lambda = lambda, standardize = TRUE)
+  
+  # Extract coefficients (excluding intercept)
+  coefs <- as.vector(coef(lasso_fit)[-1])  # Exclude intercept
+  coef_names <- colnames(X_boot)  # Names of predictors in this bootstrap sample
+  
+  # Assign the coefficients to the correct positions
+  full_coefs[coef_names] <- coefs
+  
+  return(full_coefs)
+}
+
+# Set up bootstrap
+set.seed(123)
+n_boot <- 1000  # Number of bootstrap samples
+X_train <- model.matrix(Log_Revenue_Total ~ ., data = df_pred)[, -1]
+y_train <- df_pred$Log_Revenue_Total
+
+
+# Perform bootstrap
+bootstrap_results <- boot(
+  data = df_pred,
+  statistic = bootstrap_lasso,
+  R = n_boot,
+  lambda = final_lambda_lasso
+)
+
+# Compute confidence intervals for each coefficient
+bootstrap_cis <- apply(bootstrap_results$t, 2, function(coefs) {
+  quantile(coefs, probs = c(0.025, 0.975))
+})
+
+# Format as a data frame
+cis_df <- data.frame(
+  Predictor = colnames(X_train),
+  CI_Lower = bootstrap_cis[1, ],
+  CI_Upper = bootstrap_cis[2, ]
+)
+
+
+## Compare to the confidence intervals computed in the standard regression output
+
+# Identify numeric predictors
+numeric_predictors <- sapply(df_pred[predictor_columns], is.numeric)
+
+# Standardize only numeric predictors
+df_pred_standardized <- df_pred
+df_pred_standardized[names(numeric_predictors)[numeric_predictors]] <- scale(
+  df_pred[names(numeric_predictors)[numeric_predictors]]
+)
+
+# # See that non-numeric columns remain unchanged
+# print("Standardized dataset:")
+# print(head(df_pred_standardized))
+
+# Fit OLS regression with standardized predictors
+ols_model_standardized <- lm(Log_Revenue_Total ~ ., data = df_pred_standardized)
+
+# Extract OLS confidence intervals
+ols_cis_standardized <- confint(ols_model_standardized, level = 0.95)
+ols_cis_df_standardized <- data.frame(
+  Predictor = rownames(ols_cis_standardized),
+  OLS_CI_Lower_Standardized = ols_cis_standardized[, 1],
+  OLS_CI_Upper_Standardized = ols_cis_standardized[, 2]
+)
+
+# Merge with Bootstrap confidence intervals for comparison
+comparison_lasso_OLS <- merge(
+  cis_df,  # Bootstrap confidence intervals from Lasso
+  ols_cis_df_standardized,
+  by = "Predictor",
+  all.x = TRUE
+)
+
+# Display the comparison
+print("Comparison of Bootstrap and Standardized OLS Confidence Intervals:")
+print(comparison_lasso_OLS)
+
+
+# visualize the difference in Lasso vs. OLS CIs
+
+# Calculate confidence interval sizes for Lasso and OLS
+comparison_lasso_OLS$Lasso_CI_Size <- comparison_lasso_OLS$CI_Upper - comparison_lasso_OLS$CI_Lower
+comparison_lasso_OLS$OLS_CI_Size <- comparison_lasso_OLS$OLS_CI_Upper_Standardized - comparison_lasso_OLS$OLS_CI_Lower_Standardized
+
+# Reshape the data for plotting
+ci_data_lasso <- comparison_lasso_OLS %>%
+  select(Predictor, Lasso_CI_Size, OLS_CI_Size) %>%
+  pivot_longer(cols = c(Lasso_CI_Size, OLS_CI_Size), 
+               names_to = "Method", 
+               values_to = "CI_Size")
+
+# Rename methods for better readability
+ci_data_lasso$Method <- ifelse(ci_data_lasso$Method == "Lasso_CI_Size", "Lasso", "OLS")
+
+# Create the density plot
+ggplot(ci_data_lasso, aes(x = CI_Size, fill = Method)) +
+  geom_density(alpha = 0.5) +
+  scale_x_log10() +
+  labs(
+    title = "Density Plot of Confidence Interval Sizes: Lasso vs. OLS",
+    x = "Confidence Interval Size",
+    y = "Density"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    legend.title = element_blank()
+  )
+
+# violin plot
+ggplot(ci_data_lasso, aes(x = Method, y = CI_Size)) +
+  geom_violin(fill = "lightblue") +
+  geom_boxplot(width = 0.1, fill = "white") +
+  theme_minimal() +
+  labs(title = "Distribution of CI_Size by Group", x = "Group", y = "CI_Size")
 
 
 ```
