@@ -723,17 +723,45 @@ knitr::kable(Errs_table, col.names = c("Model", "Prediction Error (Mean 0-1 Loss
 print(Errs_table)
 ```
 
-
-
-# Project Part 2 
+# Project Part 2
 
 ## 1: Prediction on the holdout set
 
-### Classification 
+### Regression
+
+```{r Regression prediction with winning modeling strategy, Random Forest Model}
+
+column_names <- c(
+  "Demand.Summer.Peak", "Demand.Winter.Peak", "Sources.Generation", "Sources.Purchased",
+  "Sources.Other", "Uses.Retail", "Uses.Resale", "Uses.No.Charge", "Uses.Consumed", "Uses.Losses",
+  "Retail.Residential.Customers", "Retail.Commercial.Customers", "Retail.Industrial.Customers",
+  "Retail.Transportation.Customers", "Utility.Region", "Max.Revenue.Sector", "Revenue.Total", "Utility.Type"
+)
+
+# Select the relevant columns in the test set
+holdout_pred <- holdout[, column_names]
+# Apply the same transformation to the test set
+holdout_pred$Log_Revenue_Total <- log1p(holdout$Revenue.Total)
+
+# Predict on the test set
+rf_test_predictions <- predict(rf_model, newdata = holdout_pred)
+
+# Check for NA values in predictions or Log_Revenue_Total
+if (any(is.na(rf_test_predictions)) || any(is.na(holdout_pred$Log_Revenue_Total))) {
+    stop("Predictions or Log_Revenue_Total contain NA values.")
+}
+
+# Calculate RMSE
+rf_test_rmse <- sqrt(mean((rf_test_predictions - holdout_pred$Log_Revenue_Total)^2))
+cat(paste("Random Forest Test RMSE:", rf_test_rmse, "\n"))
+
+```
+
+### Classification
 
 #### a)
 
-In part 1, the logistic regression classifier had the best performance. This is the classifier that will be used for prediction on the holdout set. 
+In part 1, the logistic regression classifier had the best performance. This is the classifier that will be used for prediction on the holdout set.
 
 ```{r Classification prediction with winning modeling strategy}
 # Select specific columns from the dataframe based on positive correlation > 0.1 or negative correlation <-0.1
@@ -811,13 +839,64 @@ print(paste("0-1 Loss on holdout data:", round(zero_one_loss_holdout, 4)))
 
 ```
 
-
-
 ## 2: Inference
 
-#### (c) 
+#### (a)
+```{r 2a}
+# Extract the final Ridge model using the best lambda
+final_ridge_model <- ridge_model$finalModel
 
-```{r 2c Fit to test data Ridge} 
+# Extract coefficients from the final model
+coefficients <- coef(final_ridge_model, s = final_lambda_ridge)
+
+# Print the coefficients
+print(coefficients)
+
+```
+
+#### (b)
+```{r}
+# Select a subset of covariates
+subset_column_names <- c(  "Demand.Summer.Peak", "Demand.Winter.Peak", "Sources.Generation", "Utility.Region", "Max.Revenue.Sector", "Revenue.Total", "Utility.Type")
+
+# Create a new data frame with the subset of columns
+df_subset <- df[, subset_column_names]
+
+df_subset$Log_Revenue_Total <- log1p(df_subset$Revenue.Total)
+
+# Train the Ridge Regression model using the subset of covariates
+ridge_subset_model <- train(Log_Revenue_Total ~ ., 
+                            data = df_subset, 
+                            method = "glmnet",  
+                            trControl = train_control,
+                            metric = "RMSE", 
+                            preProcess = "scale",  
+                            tuneGrid = expand.grid(alpha = 0, lambda = seq(0, 1, length = 100))) 
+
+```
+```{r}
+# Get the coefficients for the best model at the selected lambda
+best_lambda <- ridge_model$bestTune$lambda
+best_model_coeffs <- coef(ridge_model$finalModel, s = best_lambda)
+
+# Print all coefficients for the best Ridge Regression model
+cat("All coefficients for the best Ridge Regression model:\n")
+print(best_model_coeffs)
+
+# Get coefficients for the subset model
+best_lambda_subset <- ridge_subset_model$bestTune$lambda
+best_model_coeffs_subset <- coef(ridge_subset_model$finalModel, s = best_lambda_subset)
+
+# Print all coefficients for the subset model
+cat("All coefficients for the Ridge Regression model with a subset of covariates:\n")
+print(best_model_coeffs_subset)
+```
+
+
+
+#### (c)
+
+```{r 2c Fit to test data Ridge}
 
 # manually refit final ridge model 
 
@@ -887,7 +966,6 @@ print(comparison)
 
 
 ```
-
 
 ```{r 2d bootstrap Ridge}
 
@@ -1028,8 +1106,6 @@ ggplot(ci_data_ridge, aes(x = Method, y = CI_Size)) +
 
 ```
 
-
-
 ```{r 2c Fit to test data Lasso}
 
 # Define the columns to include in df_pred
@@ -1090,7 +1166,6 @@ print("Comparison of coefficients from training and holdout data:")
 print(comparison)
 
 ```
-
 
 ```{r 2d bootstrap Lasso}
 

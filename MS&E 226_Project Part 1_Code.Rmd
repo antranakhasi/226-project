@@ -246,11 +246,11 @@ region_means <- df %>%
 View(state_means)
 View(type_means)
 View(region_means)
-variables_to_plot <- names(state_means)[-1]  # Exclude Utility.State
-plot_list <- list()
 ```
 
 ```{r Utility.State plots, fig.show='hide', results='hide'}
+variables_to_plot <- names(state_means)[-1]  # Exclude Utility.State
+plot_list <- list()
 # Loop through each variable and create a plot
 for (var in variables_to_plot) {
   p <- ggplot(state_means, aes_string(x = "Utility.State", y = var)) +
