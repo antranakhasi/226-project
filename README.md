@@ -14,7 +14,7 @@
 ## Write up
 [Part 1](https://docs.google.com/document/d/1SeUzsrH1HSbG22OYjkzIj-EYvIGSxJYkXD2DDPh5IMk/edit?tab=t.0)
 
-[Part 2]([https://docs.google.com/document/d/18JeTHdAWoqv3bGOg0yGatRhkbG9J3VJ4hwqW7M3sEsc/edit?usp=sharing](https://docs.google.com/document/d/1Te-N7gG_sXn3YCHXmaRYPkpKwEBnZxnbn7wmBzA-YPc/edit?usp=sharing))
+[Part 2]([https://docs.google.com/document/d/18JeTHdAWoqv3bGOg0yGatRhkbG9J3VJ4hwqW7M3sEsc/edit?usp=sharing](https://docs.google.com/document/d/1Te-N7gG_sXn3YCHXmaRYPkpKwEBnZxnbn7wmBzA-YPc/edit?usp=sharing)
 
 ## Dataset
 [Kaggle Link](https://www.kaggle.com/datasets/mexwell/us-energy-production)
