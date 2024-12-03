@@ -946,6 +946,7 @@ print(best_model_coeffs_subset)
 
 
 #### (c)
+
 ```{r 2c Fit to test data OLS}
 
 # Define the columns to include in df_pred
@@ -956,7 +957,7 @@ column_names <- c(
   "Retail.Transportation.Customers", "Utility.Region", "Max.Revenue.Sector", "Revenue.Total", "Utility.Type"
 )
 
-# save a copy of the holdout dataset to be transformed/cleaned 
+# Save a copy of the holdout dataset to be transformed/cleaned 
 # Create df_test with only the specified columns from holdout
 df_test <- holdout[, column_names]
 
@@ -966,19 +967,40 @@ df_test$Log_Revenue_Total <- log1p(df_test$Revenue.Total)
 # Refit the OLS model on the test set 
 ols_test <- lm(ols_formula, data = df_test)
 
-# Extract coefficients from the test set
-ols_test_coefs <- coef(ols_test)
+# Extract p-values from the training and test models
+training_pvalues <- summary(ols_train)$coefficients[, "Pr(>|t|)"]
+test_pvalues <- summary(ols_test)$coefficients[, "Pr(>|t|)"]
 
-# Extract coefficients from training and holdout models
-training_coefs <- as.matrix(coef(ols_train))
-holdout_coefs <- as.matrix(ols_test_coefs)
+# Remove the intercept term from p-values
+training_pvalues <- training_pvalues[names(training_pvalues) != "(Intercept)"]
+test_pvalues <- test_pvalues[names(test_pvalues) != "(Intercept)"]
 
-# Remove the intercept term (row with name "(Intercept)") from both coefficient matrices
-training_coefs <- training_coefs[rownames(training_coefs) != "(Intercept)", , drop = FALSE]
-holdout_coefs <- holdout_coefs[rownames(holdout_coefs) != "(Intercept)", , drop = FALSE]
+# Ensure feature names match between the training and holdout p-values
+common_features <- intersect(names(training_pvalues), names(test_pvalues))
 
-# Ensure feature names match between the training and holdout coefficients
-common_features <- intersect(rownames(training_coefs), rownames(holdout_coefs))
+# Subset p-values to only include common features
+training_pvalues <- training_pvalues[common_features]
+test_pvalues <- test_pvalues[common_features]
+
+# Combine p-values into a comparison data frame
+comparison <- data.frame(
+  Predictor = common_features,
+  Training_Pvalues = round(training_pvalues, 8),
+  Test_Pvalues = round(test_pvalues, 8)
+)
+
+# Sort the comparison data frame in increasing order of Training_Pvalues
+comparison <- comparison[order(comparison$Training_Pvalues), ]
+
+# Set options to avoid scientific notation
+options(scipen = 999)
+
+# Display the comparison
+print("Comparison of p-values from training and test data:")
+print(comparison)
+
+
+## compare coefficients
 
 # Subset coefficients to only include common features
 training_coefs <- training_coefs[common_features, , drop = FALSE]
@@ -994,58 +1016,40 @@ comparison <- data.frame(
 # Sort the comparison data frame in decreasing order of Training_Coefs
 comparison <- comparison[order(-comparison$Training_Coefs), ]
 
-# Set options to avoid scientific notation
-options(scipen = 999)
-
 # Display the comparison
 print("Comparison of coefficients from training and holdout data:")
 print(comparison)
 
-
 ```
+
+#### (d)
 
 ```{r 2d bootstrap OLS}
 
-# Function to fit Ridge on bootstrap sample and return coefficients
-bootstrap_ridge <- function(data, indices, lambda) {
+# Function to fit OLS on bootstrap sample and return coefficients
+bootstrap_ols <- function(data, indices) {
   # Bootstrap sampling
   boot_sample <- data[indices, ]
   
-  # Create the model matrix from the bootstrap sample
-  X_boot <- model.matrix(Log_Revenue_Total ~ ., data = boot_sample)[, -1]
-  y_boot <- boot_sample$Log_Revenue_Total
+  # Fit OLS model
+  ols_fit <- lm(ols_formula, data = boot_sample)
   
-  # Ensure that X_boot has the same column names as the original data
-  full_X <- model.matrix(Log_Revenue_Total ~ ., data = data)[, -1]
-  full_coefs <- numeric(ncol(full_X))  # Create a vector for all predictors (set to 0 initially)
-  names(full_coefs) <- colnames(full_X)  # Name it with the original predictor names
+  # Extract coefficients
+  coefs <- coef(ols_fit)
   
-  # Fit Ridge model
-  ridge_fit <- glmnet(X_boot, y_boot, alpha = 0, lambda = lambda, standardize = TRUE)
-  
-  # Extract coefficients (excluding intercept)
-  coefs <- as.vector(coef(ridge_fit)[-1])  # Exclude intercept
-  coef_names <- colnames(X_boot)  # Names of predictors in this bootstrap sample
-  
-  # Assign the coefficients to the correct positions
-  full_coefs[coef_names] <- coefs
-  
-  return(full_coefs)
+  # Return coefficients (excluding intercept if not needed)
+  return(coefs)
 }
 
 # Set up bootstrap
 set.seed(123)
 n_boot <- 1000  # Number of bootstrap samples
-X_train <- model.matrix(Log_Revenue_Total ~ ., data = df_pred)[, -1]
-y_train <- df_pred$Log_Revenue_Total
-
 
 # Perform bootstrap
 bootstrap_results <- boot(
   data = df_pred,
-  statistic = bootstrap_ridge,
-  R = n_boot,
-  lambda = final_lambda_ridge
+  statistic = bootstrap_ols,
+  R = n_boot
 )
 
 # Compute confidence intervals for each coefficient
@@ -1055,32 +1059,14 @@ bootstrap_cis <- apply(bootstrap_results$t, 2, function(coefs) {
 
 # Format as a data frame
 cis_df <- data.frame(
-  Predictor = colnames(X_train),
+  Predictor = names(bootstrap_results$t0),
   CI_Lower = bootstrap_cis[1, ],
   CI_Upper = bootstrap_cis[2, ]
 )
 
 
-## Compare to the confidence intervals computed in the standard regression output
-
-# Identify numeric predictors
-numeric_predictors <- sapply(df_pred[column_names], is.numeric)
-
-# Standardize only numeric predictors
-df_pred_standardized <- df_pred
-df_pred_standardized[names(numeric_predictors)[numeric_predictors]] <- scale(
-  df_pred[names(numeric_predictors)[numeric_predictors]]
-)
-
-# # See that non-numeric columns remain unchanged
-# print("Standardized dataset:")
-# print(head(df_pred_standardized))
-
-# Fit OLS regression with standardized predictors
-ols_model_standardized <- lm(Log_Revenue_Total ~ ., data = df_pred_standardized)
-
-# Extract OLS confidence intervals
-ols_cis_standardized <- confint(ols_model_standardized, level = 0.95)
+# Extract OLS confidence intervals from the standard regression output
+ols_cis_standardized <- confint(ols_test, level = 0.95)
 ols_cis_df_standardized <- data.frame(
   Predictor = rownames(ols_cis_standardized),
   OLS_CI_Lower_Standardized = ols_cis_standardized[, 1],
@@ -1088,8 +1074,8 @@ ols_cis_df_standardized <- data.frame(
 )
 
 # Merge with Bootstrap confidence intervals for comparison
-comparison_ridge_OLS <- merge(
-  cis_df,  # Bootstrap confidence intervals from Ridge
+comparison_ols <- merge(
+  cis_df,  # Bootstrap confidence intervals from OLS
   ols_cis_df_standardized,
   by = "Predictor",
   all.x = TRUE
@@ -1097,31 +1083,30 @@ comparison_ridge_OLS <- merge(
 
 # Display the comparison
 print("Comparison of Bootstrap and Standardized OLS Confidence Intervals:")
-print(comparison_ridge_OLS)
+print(comparison_ols)
 
+# Visualize the difference in Bootstrap vs. Standardized OLS CIs
 
-# visualize the difference in Ridge vs. OLS CIs
-
-# Calculate confidence interval sizes for Ridge and OLS
-comparison_ridge_OLS$Ridge_CI_Size <- comparison_ridge_OLS$CI_Upper - comparison_ridge_OLS$CI_Lower
-comparison_ridge_OLS$OLS_CI_Size <- comparison_ridge_OLS$OLS_CI_Upper_Standardized - comparison_ridge_OLS$OLS_CI_Lower_Standardized
+# Calculate confidence interval sizes for Bootstrap and OLS
+comparison_ols$Bootstrap_CI_Size <- comparison_ols$CI_Upper - comparison_ols$CI_Lower
+comparison_ols$OLS_CI_Size <- comparison_ols$OLS_CI_Upper_Standardized - comparison_ols$OLS_CI_Lower_Standardized
 
 # Reshape the data for plotting
-ci_data_ridge <- comparison_ridge_OLS %>%
-  select(Predictor, Ridge_CI_Size, OLS_CI_Size) %>%
-  pivot_longer(cols = c(Ridge_CI_Size, OLS_CI_Size), 
+ci_data_ols <- comparison_ols %>%
+  select(Predictor, Bootstrap_CI_Size, OLS_CI_Size) %>%
+  pivot_longer(cols = c(Bootstrap_CI_Size, OLS_CI_Size), 
                names_to = "Method", 
                values_to = "CI_Size")
 
 # Rename methods for better readability
-ci_data_ridge$Method <- ifelse(ci_data_ridge$Method == "Ridge_CI_Size", "Ridge", "OLS")
+ci_data_ols$Method <- ifelse(ci_data_ols$Method == "Bootstrap_CI_Size", "Bootstrap OLS", "Standard OLS Output")
 
 # Create the density plot
-ggplot(ci_data_ridge, aes(x = CI_Size, fill = Method)) +
+ggplot(ci_data_ols, aes(x = CI_Size, fill = Method)) +
   geom_density(alpha = 0.5) +
   scale_x_log10() +
   labs(
-    title = "Density Plot of Confidence Interval Sizes: Ridge vs. OLS",
+    title = "Density Plot of Confidence Interval Sizes: Bootstrap vs. Standard OLS Output",
     x = "Confidence Interval Size",
     y = "Density"
   ) +
@@ -1132,17 +1117,47 @@ ggplot(ci_data_ridge, aes(x = CI_Size, fill = Method)) +
     legend.title = element_blank()
   )
 
-# violin plot
-ggplot(ci_data_ridge, aes(x = Method, y = CI_Size)) +
+# Violin plot
+ggplot(ci_data_ols, aes(x = Method, y = CI_Size)) +
   geom_violin(fill = "lightblue") +
   geom_boxplot(width = 0.1, fill = "white") +
   theme_minimal() +
-  labs(title = "Distribution of CI_Size by Group", x = "Group", y = "CI_Size")
-
+  labs(title = "Distribution of CI_Size by Group", x = "Method", y = "CI_Size")
 
 
 ```
 
+#### (e)
+
+```{r Benjamini_Hochberg Procedure}
+
+# Extract the p-values for the coefficients
+p_values <- summary(ols_test)$coefficients[, 4] # 4th column contains p-values
+
+# Apply the Benjamini-Hochberg procedure
+adjusted_p_values <- p.adjust(p_values, method = "BH")
+
+# Combine the results into a summary dataframe
+results <- data.frame(
+  Coefficient = rownames(summary(ols_test)$coefficients),
+  P_Value = p_values,
+  Adjusted_P_Value = adjusted_p_values
+)
+
+# Display the results
+print(results)
+
+# Optional: Identify which hypotheses are significant after FDR correction
+significant <- results$Adjusted_P_Value < 0.05
+results$Significant <- ifelse(significant, "Yes", "No")
+
+# Display the results with significance labels
+print(results)
+
+```
+
+
+#### GRAVEYARD
 
 
 ```{r 2c Fit to test data Ridge}
