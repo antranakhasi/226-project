@@ -35,9 +35,7 @@ library(ggplot2)
 set.seed(123) # Setting seed for reproducibility
 ```
 
-#Project Part 1
-
-## 2. Data Pre-processing
+# 2: Data Pre-processing
 
 ```{r Pre Process, results='hide'}
 
@@ -92,7 +90,7 @@ df <- df[-which(is.na(df$Utility.Region)), ]
 
 ```
 
-## 3. Hold Out Set
+# 3: Hold Out Set
 
 ```{r Create Holdout Set, results='hide'}
 # Total number of rows in the dataset
@@ -110,9 +108,9 @@ cat("Holdout Set Size:", nrow(holdout), "\n")
 cat("Training Set Size:", nrow(df), "\n")
 ```
 
-## 5. Data Exploration
+# 5: Data Exploration
 
-### Correlations
+## Correlations
 
 ```{r Correlations with Revenue.Total, fig.show='hide', results='hide'}
 
@@ -227,7 +225,7 @@ ggplot(data = cor, aes(x = Var1, y = Var2, fill = value)) +
 
 ```
 
-### Subgroups in data
+## Subgroups in data
 
 ```{r means across categories, fig.show='hide', results='hide'}
 
@@ -339,9 +337,9 @@ for (plot in plot_list) {
 }
 ```
 
-## 6. Regression
+# 6: Regression
 
-### Data Transformations
+## Data Transformations
 
 ```{r data transformations}
 # set seed
@@ -394,7 +392,7 @@ ggplot(df_pred, aes(x = Log_Revenue_Total)) +
 
 ```
 
-### Baseline Model
+## Baseline Model
 
 ```{r Baseline Model}
 ### Baseline Model
@@ -414,7 +412,7 @@ rmse <- sqrt(mean(residuals^2))
 cat(paste("OLS Model RMSE:", rmse, "\n"))
 ```
 
-### Cross Validation setup
+## Cross Validation setup
 
 ```{r cross validation}
 ### Cross Validation
@@ -426,7 +424,7 @@ train_control <- trainControl(method = "cv",
                               savePredictions = "all")
 ```
 
-### Model 1: Ridge Regression
+## Model 1: Ridge Regression
 
 ```{r Model 1: Ridge Regression}
 ### Ridge Regression
@@ -450,7 +448,7 @@ cat(paste("Final lambda value for Ridge regression:", final_lambda_ridge, "\n"))
 
 ```
 
-### Model 2: Lasso Regression
+## Model 2: Lasso Regression
 
 ```{r Model 2: Lasso Regression}
 ### Lasso Regression
@@ -477,7 +475,7 @@ cat(paste("Final lambda value for Lasso regression:", final_lambda_lasso, "\n"))
 
 ```
 
-### Model 3: Random Forest
+## Model 3: Random Forest
 
 ```{r Model 3: Random Forest}
 ### Random Forest
@@ -497,9 +495,9 @@ rf_model_rmse <- min(rf_model$results$RMSE)
 cat(paste("Random Forest RMSE:", rf_model_rmse, "\n"))
 ```
 
-## 7. Classification
+# 7: Classification
 
-### Data Cleaning
+## Data Cleaning
 
 ```{r clean data for building classifiers}
 
@@ -537,7 +535,7 @@ df_clean_scaled[numeric_cols] <- scale(df_clean[numeric_cols])
 
 ```
 
-### Classifier 1: K-NN
+## Classifier 1: K-NN
 
 ```{r Classifier 1: K-NN}
 
@@ -614,7 +612,7 @@ print(paste("0-1 Loss:", round(Err_CV_knn, 4)))
 
 ```
 
-### Classifier 2: Logistic Regression with Feature Selection
+## Classifier 2: Logistic Regression with Feature Selection
 
 ```{r Classfier 2: Logistic Regression with Feature Selection}
 
@@ -667,7 +665,7 @@ print(paste("Best lambda:", model_cv$bestTune$lambda))
 
 ```
 
-### Classifier 3: Decision Tree
+## Classifier 3: Decision Tree
 
 ```{r Classifier 3: Decision Tree}
 
@@ -708,7 +706,7 @@ print(paste("cp of chosen model:", model_grid$bestTune))
 
 ```
 
-### Comparing Classifiers
+## Comparing Classifiers
 
 ```{r compare classifiers, include=TRUE, echo=FALSE, results='asis'}
 
@@ -727,7 +725,7 @@ print(Errs_table)
 
 # Project Part 2
 
-## 1. Prediction on the holdout set
+## 1: Prediction on the holdout set
 
 ### Regression
 
@@ -760,6 +758,8 @@ cat(paste("Random Forest Test RMSE:", rf_test_rmse, "\n"))
 ```
 
 ### Classification
+
+#### a)
 
 In part 1, the logistic regression classifier had the best performance. This is the classifier that will be used for prediction on the holdout set.
 
@@ -839,7 +839,7 @@ print(paste("0-1 Loss on holdout data:", round(zero_one_loss_holdout, 4)))
 
 ```
 
-## 2. Inference
+## 2: Inference
 
 ```{r create OLS model using covariates selectedin Lasso}
 
@@ -887,80 +887,62 @@ ols_formula <- as.formula(paste("Log_Revenue_Total ~", paste(unique_nonzero_cova
 ols_train <- lm(ols_formula, data = df_selected)
 
 # Print summary of the OLS regression model
-ols_summary <- summary(ols_train)
+summary(ols_train)
 
 ```
 
-### Statistically Significant Coefficients
+
+#### (a)
 ```{r 2a}
-coefficients <- ols_summary$coefficients
+# Extract the final Ridge model using the best lambda
+final_ridge_model <- ridge_model$finalModel
+
+# Extract coefficients from the final model
+coefficients <- coef(final_ridge_model, s = final_lambda_ridge)
+
+# Print the coefficients
 print(coefficients)
 
-# Extract and identify statistically significant coefficients (p-value < 0.05)
-significant_coeffs <- coefficients[coefficients[, 4] < 0.05, ]
-
-# Print the statistically significant coefficients and their p-values
-print("Statistically significant coefficients:")
-print(significant_coeffs)
-
-# Now, let's extract the names of the statistically significant variables
-significant_variable_names <- rownames(significant_coeffs)
-print("Significant variables:")
-print(significant_variable_names)
-
 ```
 
-### Subset of covariates model
-
+#### (b)
 ```{r}
-# Select a subset of covariates (as you did before)
-subset_column_names <- c("Demand.Summer.Peak", "Demand.Winter.Peak", "Sources.Generation", "Utility.Region", "Max.Revenue.Sector", "Revenue.Total", "Utility.Type")
+# Select a subset of covariates
+subset_column_names <- c(  "Demand.Summer.Peak", "Demand.Winter.Peak", "Sources.Generation", "Utility.Region", "Max.Revenue.Sector", "Revenue.Total", "Utility.Type")
 
 # Create a new data frame with the subset of columns
 df_subset <- df[, subset_column_names]
 
-# Create the log-transformed revenue variable
 df_subset$Log_Revenue_Total <- log1p(df_subset$Revenue.Total)
-df_subset$Revenue.Total <- NULL
 
-# Create the formula for OLS regression
-ols_formula <- as.formula(paste("Log_Revenue_Total ~", paste(subset_column_names[-6], collapse = " + ")))
-
-# Train the OLS regression model
-ols_model <- lm(ols_formula, data = df_subset)
-
-# Print the summary of the OLS model
-cat("OLS model coefficients summary:\n")
-summary(ols_model)
-
-# Extract and print the coefficients
-cat("OLS model coefficients:\n")
-print(coef(ols_model))
-
-# Optional: Check the significance of each coefficient using the summary output
-cat("OLS model coefficient significance:\n")
-summary(ols_model)$coefficients[, 4]  # p-values of the coefficients
+# Train the Ridge Regression model using the subset of covariates
+ridge_subset_model <- train(Log_Revenue_Total ~ ., 
+                            data = df_subset, 
+                            method = "glmnet",  
+                            trControl = train_control,
+                            metric = "RMSE", 
+                            preProcess = "scale",  
+                            tuneGrid = expand.grid(alpha = 0, lambda = seq(0, 1, length = 100))) 
 
 ```
-
 ```{r}
-# Get the summary of the OLS model
-ols_summary <- summary(ols_model)
+# Get the coefficients for the best model at the selected lambda
+best_lambda <- ridge_model$bestTune$lambda
+best_model_coeffs <- coef(ridge_model$finalModel, s = best_lambda)
 
-# Extract the p-values of the coefficients
-p_values <- ols_summary$coefficients[, 4]
+# Print all coefficients for the best Ridge Regression model
+cat("All coefficients for the best Ridge Regression model:\n")
+print(best_model_coeffs)
 
-# Set a significance threshold (e.g., 0.05)
-significance_threshold <- 0.05
+# Get coefficients for the subset model
+best_lambda_subset <- ridge_subset_model$bestTune$lambda
+best_model_coeffs_subset <- coef(ridge_subset_model$finalModel, s = best_lambda_subset)
 
-# Identify significant coefficients based on p-value
-significant_coeffs <- names(p_values)[p_values < significance_threshold]
-
-# Print the significant coefficients
-cat("Significant coefficients based on p-value < 0.05:\n")
-print(significant_coeffs)
-
+# Print all coefficients for the subset model
+cat("All coefficients for the Ridge Regression model with a subset of covariates:\n")
+print(best_model_coeffs_subset)
 ```
+
 
 
 #### (c)
