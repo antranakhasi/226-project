@@ -1022,6 +1022,8 @@ print(comparison)
 
 ```
 
+#### (d)
+
 ```{r 2d bootstrap OLS}
 
 # Function to fit OLS on bootstrap sample and return coefficients
@@ -1125,6 +1127,37 @@ ggplot(ci_data_ols, aes(x = Method, y = CI_Size)) +
 
 ```
 
+#### (e)
+
+```{r Benjamini_Hochberg Procedure}
+
+# Extract the p-values for the coefficients
+p_values <- summary(ols_test)$coefficients[, 4] # 4th column contains p-values
+
+# Apply the Benjamini-Hochberg procedure
+adjusted_p_values <- p.adjust(p_values, method = "BH")
+
+# Combine the results into a summary dataframe
+results <- data.frame(
+  Coefficient = rownames(summary(ols_test)$coefficients),
+  P_Value = p_values,
+  Adjusted_P_Value = adjusted_p_values
+)
+
+# Display the results
+print(results)
+
+# Optional: Identify which hypotheses are significant after FDR correction
+significant <- results$Adjusted_P_Value < 0.05
+results$Significant <- ifelse(significant, "Yes", "No")
+
+# Display the results with significance labels
+print(results)
+
+```
+
+
+#### GRAVEYARD
 
 
 ```{r 2c Fit to test data Ridge}
