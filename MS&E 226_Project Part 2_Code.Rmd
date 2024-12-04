@@ -839,7 +839,7 @@ print(paste("0-1 Loss on holdout data:", round(zero_one_loss_holdout, 4)))
 
 ```
 
-## 2: Inference
+## 2. Inference
 
 ```{r create OLS model using covariates selectedin Lasso}
 
@@ -903,8 +903,13 @@ coefficients_table <- summary_ols$coefficients
 # Identify statistically significant coefficients
 significant_coefficients <- coefficients_table[coefficients_table[, 4] < 0.05, ]
 
-# Print significant coefficients
-print(significant_coefficients)
+significant_coefficients_df <- data.frame(
+  Variable = rownames(significant_coefficients),
+  Pr_greater_than_t = significant_coefficients[, 4]
+)
+
+# Print the table
+print(significant_coefficients_df)
 
 ```
 
@@ -937,8 +942,13 @@ subset_summary <- summary(subset_ols)
 subset_coefficients <- subset_summary$coefficients
 significant_subset_coefficients <- subset_coefficients[subset_coefficients[, 4] < 0.05, ]
 
-# Print significant coefficients from the subset model
-print(significant_subset_coefficients)
+significant_subset_coefficients_df <- data.frame(
+  Variable = rownames(significant_subset_coefficients),
+  Pr_greater_than_t = significant_subset_coefficients[, 4]
+)
+
+# Print the table
+print(significant_subset_coefficients_df)
 ```
 
 
